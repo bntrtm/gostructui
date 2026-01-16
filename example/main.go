@@ -25,7 +25,7 @@ type applicationForm struct {
 }
 
 func main() {
-	// STEP 2: Choose custom settings t apply to your menu, if you desire.
+	// STEP 2: Choose custom settings to apply to your menu, if you desire.
 	customMenuSettings := &gostructui.MenuSettings{}
 	// Ensure that if you use custom settings, you initialize them first!
 	customMenuSettings.Init()
