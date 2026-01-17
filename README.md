@@ -1,6 +1,6 @@
 # gostructui
 
-![gostructui-example](https://github.com/user-attachments/assets/5c671fa4-e00a-46c7-b736-1119fcbdd037)
+![gostructui-example](https://github.com/user-attachments/assets/6effe862-21c1-472a-85ca-5b815580807c)
 
 A Go Library of bubbletea models leveraging the `reflect` package to expose structs
 as forms and menus directly to CLI users, allowing them to edit fields with primitive types.
