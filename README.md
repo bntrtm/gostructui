@@ -102,10 +102,14 @@ p := tea.NewProgram(configEditMenu)
 
 			// newApplication: "Wow, I feel like a new struct!"
 		}
-		fmt.Println("Thank you for applying!")
+		if newApplication.FirstName == "" {
+			log.Fatal("ERROR: Missing First Name field!")
+		}
+		fmt.Printf("Thank you for applying, %s!\n", newApplication.FirstName)
 		time.Sleep(time.Second * 5)
 		os.Exit(0)
 	}
 ```
 You have now captured user input for one or more fields using the `gostructui` package!
-Do what you need with these new values.
+Do what you need with these new values. In the demo, our program
+prints the name of the applicant after applying.

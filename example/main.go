@@ -64,7 +64,10 @@ func main() {
 
 			// newApplication: "Wow, I feel like a new struct!"
 		}
-		fmt.Println("Thank you for applying!")
+		if newApplication.FirstName == "" {
+			log.Fatal("ERROR: Missing First Name field!")
+		}
+		fmt.Printf("Thank you for applying, %s!\n", newApplication.FirstName)
 		time.Sleep(time.Second * 5)
 		os.Exit(0)
 	}

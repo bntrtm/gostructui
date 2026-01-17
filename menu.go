@@ -20,11 +20,99 @@ type MenuSettings struct {
 	Header         string // message to display above the struct menu
 }
 
+type FieldKind int
+
+const (
+	FieldString FieldKind = iota
+	FieldBool
+	FieldInt
+)
+
 type menuField struct {
-	value  any    // value assigned to field
+	kind FieldKind // value assigned to field
+	s    string    // possible string value
+	b    bool      // possible bool value
+	i    int       // possible int value
+
+	editBuf string // buffer for editing this field
+	errBuf  string // potential error from bad input
+
 	name   string // name of the struct field
 	smName string // description pulled from smname tag
 	smDes  string // description pulled from smdes tag
+}
+
+func (f *menuField) handleChar(char string) {
+	switch f.kind {
+	case FieldInt:
+		if (char >= "0" && char <= "9") || (char == "-" && len(f.editBuf) == 0) {
+			f.editBuf += string(char)
+		}
+	case FieldString:
+		f.editBuf += string(char)
+	case FieldBool:
+		switch char {
+		case "t", "1":
+			f.b = true
+		case "f", "0":
+			f.b = false
+		case "right", "left":
+			f.b = !f.b
+		}
+	}
+}
+
+func (f *menuField) handleBackspace() {
+	if len(f.editBuf) == 0 {
+		return
+	}
+	f.editBuf = f.editBuf[:len(f.editBuf)-1]
+}
+
+func (f *menuField) render(editing bool, iBeamChar string) string {
+	switch f.kind {
+	case FieldInt:
+		if editing {
+			return f.editBuf + iBeamChar
+		}
+		return strconv.Itoa(f.i)
+	case FieldString:
+		if editing {
+			return f.editBuf + iBeamChar
+		}
+		return f.s
+	case FieldBool:
+		if editing {
+			if f.b {
+				return "[t] ||  f "
+			}
+			return " t  || [f]"
+		}
+		return fmt.Sprintf("%v", f.b)
+	default:
+		return ""
+	}
+}
+
+func (f *menuField) commitEdit() {
+	switch f.kind {
+	case FieldInt:
+		if f.editBuf == "" || f.editBuf == "-" {
+			f.i = 0
+			return
+		}
+		v, err := strconv.Atoi(f.editBuf)
+		if err != nil {
+			f.errBuf = err.Error()
+			return
+		}
+		f.i = v
+	case FieldString:
+		f.s = f.editBuf
+	}
+
+	f.editBuf = ""
+	f.errBuf = ""
 }
 
 // getFieldName returns a name for the menu field.
@@ -68,12 +156,14 @@ func (m *MenuSettings) Init() {
 // incrCursor increases the field index the user is focused on
 func (m *TModelStructMenu) incrCursor() {
 	if m.cursor > 0 {
+		m.getFieldUnderCursor().errBuf = ""
 		m.cursor--
 	}
 }
 
 // decrCursor decreases the field index the user is focused on
 func (m *TModelStructMenu) decrCursor() {
+	m.getFieldUnderCursor().errBuf = ""
 	if m.cursor < len(m.menuFields)-1 {
 		m.cursor++
 	}
@@ -83,22 +173,8 @@ func (m *TModelStructMenu) getFieldAtIndex(i int) *menuField {
 	return &m.menuFields[i]
 }
 
-func (m *TModelStructMenu) getFieldValueAtIndex(i int) any {
-	return m.getFieldAtIndex(i).value
-}
-
-func (m *TModelStructMenu) setFieldValueAtIndex(i int, value any) {
-	m.menuFields[i].value = value
-}
-
-// getCursorFieldValue returns the field value under the cursor
-func (m *TModelStructMenu) getCursorFieldValue() any {
-	return m.getFieldValueAtIndex(m.cursor)
-}
-
-// setCursorFieldValue sets the field value under the cursor
-func (m *TModelStructMenu) setCursorFieldValue(value any) {
-	m.setFieldValueAtIndex(m.cursor, value)
+func (m *TModelStructMenu) getFieldUnderCursor() *menuField {
+	return m.getFieldAtIndex(m.cursor)
 }
 
 // InitialTModelStructMenu creates a new struct menu from the given parameters.
@@ -152,14 +228,24 @@ func InitialTModelStructMenu(structObj any, fieldList []string, asBlacklist bool
 			continue
 		}
 
-		if kind := field.Type.Kind(); kind == reflect.String || kind == reflect.Bool || (kind >= reflect.Int && kind <= reflect.Int64) {
-			newField := menuField{}
-			newField.name = field.Name
-			newField.value = fieldVal.Interface()
-			newField.smName = field.Tag.Get("smname")
-			newField.smDes = field.Tag.Get("smdes")
-			newModel.menuFields = append(newModel.menuFields, newField)
+		newField := menuField{}
+		switch field.Type.Kind() {
+		case reflect.String:
+			newField.kind = FieldString
+			newField.s = fieldVal.String()
+		case reflect.Bool:
+			newField.kind = FieldBool
+			newField.b = fieldVal.Bool()
+		case reflect.Int:
+			newField.kind = FieldInt
+			newField.i = int(fieldVal.Int())
+		default:
+			return TModelStructMenu{}, fmt.Errorf("could not parse struct")
 		}
+		newField.name = field.Name
+		newField.smName = field.Tag.Get("smname")
+		newField.smDes = field.Tag.Get("smdes")
+		newModel.menuFields = append(newModel.menuFields, newField)
 	}
 
 	if len(newModel.menuFields) == 0 {
@@ -172,52 +258,34 @@ func InitialTModelStructMenu(structObj any, fieldList []string, asBlacklist bool
 func (m TModelStructMenu) ParseStruct(obj any) error {
 	v := reflect.ValueOf(obj)
 	if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("ERROR: expected a pointer to a struct, got %v", v.Kind())
+		return fmt.Errorf("expected a pointer to a struct, got %v", v.Kind())
 	}
 	v = v.Elem()
 
-	for _, menuField := range m.menuFields {
-		fieldName := menuField.name
-		newValue := menuField.value
-		field := v.FieldByName(fieldName)
+	for _, f := range m.menuFields {
+		field := v.FieldByName(f.name)
 
 		if !field.IsValid() {
-			fmt.Printf("Warning: Field '%s' not found in struct.\n", fieldName)
+			fmt.Printf("Warning: Field '%s' not found in struct.\n", f.name)
 			continue
 		}
 		if !field.CanSet() {
-			fmt.Printf("Warning: Field '%s' cannot be set (unexported or not addressable).\n", fieldName)
+			fmt.Printf("Warning: Field '%s' cannot be set (unexported or not addressable).\n", f.name)
 			continue
 		}
 
-		if field.Kind() >= reflect.Int && field.Kind() <= reflect.Int64 {
-			if val, ok := newValue.(int); ok {
-				field.SetInt(int64(val))
-			} else {
-				return fmt.Errorf("type mismatch for field '%s': expected int, got %T", fieldName, newValue)
-			}
-		} else if field.Kind() == reflect.Bool {
-			if val, ok := newValue.(bool); ok {
-				field.SetBool(val)
-			} else if val, ok := newValue.(int); ok {
-				boolVal := (val != 0)
-				// fmt.Println(fmt.Sprintf("Bool digit value %d translated as: %t", val, boolVal))
-				field.SetBool(boolVal)
-			} else if val, ok := newValue.(string); ok {
-				boolVal := (val != "f")
-				// fmt.Println(fmt.Sprintf("Bool string value %s translated as: %t", val, boolVal))
-				field.SetBool(boolVal)
-			} else if !ok {
-				fmt.Println("Error parsing digit as boolean value.")
-			}
-		} else if field.Kind() == reflect.String {
-			if val, ok := newValue.(string); ok {
-				field.SetString(val)
-			}
-		} else {
-			fmt.Printf("Skipping field '%s': unsupported kind %s\n", fieldName, field.Kind())
+		switch f.kind {
+		case FieldString:
+			field.SetString(f.s)
+		case FieldBool:
+			field.SetBool(f.b)
+		case FieldInt:
+			field.SetInt(int64(f.i))
+		default:
+			return fmt.Errorf("unsupported kind for field '%s': %v", f.name, f.kind)
 		}
 	}
+
 	return nil
 }
 
@@ -233,87 +301,23 @@ func (m TModelStructMenu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// toggle edit mode on field if 'enter' key was pressed
 		if msg.String() == "enter" {
-			m.isEditingValue = !(m.isEditingValue)
-			if m.Settings.TabAfterEntry && !m.isEditingValue {
-				m.decrCursor()
+			f := m.getFieldUnderCursor()
+			if !m.isEditingValue {
+				m.isEditingValue = true
+			} else {
+				f.commitEdit()
+				m.isEditingValue = false
+				if m.Settings.TabAfterEntry {
+					m.decrCursor()
+				}
 			}
 		} else if msg.Type == tea.KeyBackspace {
-			switch m.getCursorFieldValue().(type) {
-			case string:
-				stringVal := m.getCursorFieldValue().(string)
-				if len(stringVal) > 0 {
-					m.setCursorFieldValue(stringVal[:len(stringVal)-1])
-				}
-			case int:
-				if val := m.getCursorFieldValue().(int); val != 0 {
-					intSign := 1
-					if val < 0 {
-						intSign = -1
-					}
-					stringVal := strconv.Itoa(val)
-					var newVal string
-					if intSign == 1 {
-						newVal = stringVal[:len(stringVal)-1]
-					} else {
-						newVal = stringVal[1 : len(stringVal)-1]
-					}
-					if len(newVal) == 0 {
-						m.setCursorFieldValue(0)
-					} else {
-						convValue, err := strconv.Atoi(newVal)
-						if err != nil {
-							fmt.Printf("ERROR converting ascii to int: %v\n", err)
-						} else {
-							m.setCursorFieldValue(convValue * intSign)
-						}
-					}
-				}
+			if m.isEditingValue {
+				m.getFieldUnderCursor().handleBackspace()
 			}
 		} else {
 			if m.isEditingValue {
-				switch m.getCursorFieldValue().(type) {
-				case bool:
-					switch msg.String() {
-					case "t", "1":
-						m.setCursorFieldValue(true)
-					case "f", "0":
-						m.setCursorFieldValue(false)
-					case "right", "left":
-						m.setCursorFieldValue(!m.getCursorFieldValue().(bool))
-					default:
-						m.setCursorFieldValue(false)
-					}
-
-				case string:
-					m.setCursorFieldValue(m.getCursorFieldValue().(string) + msg.String())
-				case int:
-					switch msg.String() {
-
-					// The "right" and "l" keys increase the value
-					case "right", "l":
-						m.setCursorFieldValue(m.getCursorFieldValue().(int) + 1)
-
-					// The "left" and "h" keys decrease the value
-					case "left", "h":
-						m.setCursorFieldValue(m.getCursorFieldValue().(int) - 1)
-
-					case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-						if m.getCursorFieldValue() == 0 {
-							convValue, err := strconv.Atoi(msg.String())
-							if err != nil {
-								fmt.Printf("ERROR: failed to convert ascii to int: %v\n", err)
-							} else {
-								m.setCursorFieldValue(convValue)
-							}
-						} else {
-							intValue, err := strconv.Atoi(strconv.Itoa(m.getCursorFieldValue().(int)) + msg.String())
-							if err != nil {
-								fmt.Printf("ERROR: %v\n", err)
-							}
-							m.setCursorFieldValue(intValue)
-						}
-					}
-				}
+				m.getFieldUnderCursor().handleChar(msg.String())
 			} else {
 				// Cool, what was the actual key pressed?
 				switch msg.String() {
@@ -334,14 +338,6 @@ func (m TModelStructMenu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "down", "j", "tab":
 					m.decrCursor()
 
-				// Any numeric key sets the value for the item that
-				// the cursor is pointing at.
-				case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-					intValue, err := strconv.Atoi(msg.String())
-					if err != nil {
-						fmt.Printf("ERROR: %v\n", err)
-					}
-					m.setCursorFieldValue(intValue)
 				}
 			}
 		}
@@ -356,7 +352,7 @@ func (m TModelStructMenu) View() string {
 	var s string
 	// Add the header, if it exists
 	if m.Settings.Header != "" {
-		s = m.Settings.Header + "\n\n"
+		s = m.Settings.Header + "\n"
 	}
 	s += "\n"
 
@@ -381,7 +377,7 @@ func (m TModelStructMenu) View() string {
 	}
 
 	// Iterate over our fields
-	for i, choice := range m.menuFields {
+	for i, f := range m.menuFields {
 
 		// Is the cursor pointing at this choice?
 		cursor := "  " // no cursor
@@ -393,23 +389,9 @@ func (m TModelStructMenu) View() string {
 			}
 		}
 
-		// Is this choice numerated?
-		var value string // string represenation of field value
-		switch m.getFieldValueAtIndex(i).(type) {
-		case string:
-			if m.isEditingValue && m.cursor == i {
-				value = m.getFieldValueAtIndex(i).(string) + "|" // iBeam to indicate edit
-			} else {
-				value = m.getFieldValueAtIndex(i).(string)
-			}
-		case bool:
-			value = strconv.FormatBool(m.getFieldValueAtIndex(i).(bool))
-		case int:
-			value = strconv.Itoa(m.getFieldValueAtIndex(i).(int))
-		}
-
-		// Render the row
-		s += fmt.Sprintf("%s ⟦ %-*s ⟧: %s\n", cursor, maxFieldName, choice.getFieldName(), value)
+		// string represenation of field value
+		value := f.render(m.isEditingValue && m.cursor == i, m.Settings.IBeamChar)
+		s += fmt.Sprintf("%s ⟦ %-*s ⟧: %s\n", cursor, maxFieldName, f.getFieldName(), value)
 	}
 
 	// The footer
@@ -420,6 +402,9 @@ func (m TModelStructMenu) View() string {
 	s += "\n"
 
 	s += "\nPress s to save and quit.\nPress q to quit without saving.\n"
+	if f := m.getFieldUnderCursor(); f.errBuf != "" {
+		s += fmt.Sprintf("ERROR: %s\n", f.errBuf)
+	}
 
 	// Send the UI for rendering
 	return s
